@@ -57,23 +57,26 @@ def compute_gramian(A, B, G):
     X = solve_continuous_lyapunov(A, -BG.dot(BG.T))
     return X
 
-def find_optimal_G(A, B, k):
+def find_optimal_G_and_distribution(A, B, k):
     n_inputs = B.shape[1]
     max_trace = -np.inf
     optimal_G = None
+    traces = []
 
     for i in range(2**n_inputs):
-        if(bin(i).count("1") != k):
+        if bin(i).count("1") != k:
             continue
 
         G = np.diag([int(b) for b in format(i, f'0{n_inputs}b')])
         X = compute_gramian(A, B, G)
         trace = np.trace(X)
+        traces.append(trace)
+
         if trace > max_trace:
             max_trace = trace
             optimal_G = G
 
-    return optimal_G
+    return optimal_G, np.sort(np.array(traces))
 
 def create_graph_data(A, B):
     n_states, n_inputs = A.shape[0], B.shape[1]
@@ -99,16 +102,19 @@ def create_graph_data(A, B):
     
     return Data(x=x, edge_index=edge_index, edge_attr=edge_attr, num_states=n_states, num_inputs=n_inputs, A=torch.tensor(A, dtype=torch.float), B=torch.tensor(B, dtype=torch.float))
 
-def generate_training_data(num_samples, n_states, n_inputs, n_select_inputs, normalize_A_B=True):
-    generator = SystemDataGenerator(n_states, n_inputs)
+def generate_training_data(num_samples, n_inputs, n_select_inputs, min_states, max_states, normalize_A_B=True):
     data_list = []
     for _ in range(num_samples):
+        n_states = np.random.randint(min_states, max_states + 1)
+        generator = SystemDataGenerator(n_states, n_inputs)
         A, B = generator.generate_system()
         if normalize_A_B:
             A = A / np.std(A)
             B = B / np.std(B)
         graph_data = create_graph_data(A, B)
-        optimal_G = find_optimal_G(A, B, n_select_inputs)
+        optimal_G, dist = find_optimal_G_and_distribution(A, B, n_select_inputs)
         graph_data.y = torch.tensor(np.diag(optimal_G), dtype=torch.float)
+        graph_data.dist = dist
         data_list.append(graph_data)
     return data_list
+

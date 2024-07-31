@@ -97,7 +97,7 @@ class EGATConv(MessagePassing):
                                              self.out_channels, self.heads)
 
 class EGAT(nn.Module):
-    def __init__(self, in_channels, hidden_channels, edge_dim, num_layers, heads, num_inputs):
+    def __init__(self, in_channels, hidden_channels, edge_dim, num_layers, heads, ):
         super(EGAT, self).__init__()
         self.convs = nn.ModuleList()
         self.convs.append(EGATConv(in_channels, hidden_channels, edge_dim, heads))
@@ -106,17 +106,16 @@ class EGAT(nn.Module):
         self.convs.append(EGATConv(hidden_channels * heads, hidden_channels, edge_dim, heads, concat=False))
 
         self.out_lin = nn.Linear(hidden_channels*heads, 1)
-        self.num_inputs = num_inputs
         self.heads = heads
         self.hidden_channels = hidden_channels
 
 
-    def forward(self, x, edge_index, edge_attr):
+    def forward(self, x, edge_index, edge_attr, num_inputs):
         for conv in self.convs[:-1]:
             x = F.elu(conv(x, edge_index, edge_attr))
 
         x = self.out_lin(x).squeeze()
-        input_nodes = x[-self.num_inputs:]
+        input_nodes = x[-num_inputs:]
         out = torch.sigmoid(input_nodes)
         return out
 
@@ -129,12 +128,47 @@ def train(model, train_loader, optimizer, device):
     for data in train_loader:
         data = data.to(device)
         optimizer.zero_grad()
-        out = model(data.x, data.edge_index, data.edge_attr)
+        out = model(data.x, data.edge_index, data.edge_attr, data.num_inputs)
         loss = compute_loss(out, data.y)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
     return total_loss / len(train_loader)
+
+
+def evaluate(model, loader, device, n_select_inputs):
+    model.eval()
+    total_relative_error = 0
+    percentiles = []
+    total_samples = 0
+    with torch.no_grad():
+        for data in loader:
+            data = data.to(device)
+            out = model(data.x, data.edge_index, data.edge_attr, data.num_inputs)
+            _, top_indices = torch.topk(out, n_select_inputs)
+            predicted_G = torch.zeros_like(out)
+            predicted_G[top_indices] = 1.0
+
+            A = data.A.cpu().numpy()
+            B = data.B.cpu().numpy()
+
+            predicted_gramian = compute_gramian(A, B, np.diag(predicted_G.cpu().numpy()))
+            predicted_trace = np.trace(predicted_gramian)
+
+            optimal_G = data.y.cpu().numpy()
+            optimal_gramian = compute_gramian(A, B, np.diag(optimal_G))
+            optimal_trace = np.trace(optimal_gramian)
+
+            relative_error = abs(optimal_trace - predicted_trace) / optimal_trace
+            total_relative_error += relative_error
+
+            percentile = np.searchsorted(data.dist[0], predicted_trace) / len(data.dist[0]) * 100
+            percentiles.append(percentile)
+
+            total_samples += 1
+
+    average_relative_error = total_relative_error / total_samples
+    return average_relative_error, percentiles
 
 # def train(model, train_loader, optimizer, device):
 #     model.train()
@@ -151,40 +185,12 @@ def train(model, train_loader, optimizer, device):
 #     optimizer.step()
 #     return total_loss.item()
 #
-def evaluate(model, loader, device, n_select_inputs):
-    model.eval()
-    total_relative_error = 0
-    total_samples = 0
-    with torch.no_grad():
-        for data in loader:
-            data = data.to(device)
-            out = model(data.x, data.edge_index, data.edge_attr)
-            _, top_indices = torch.topk(out, n_select_inputs)
-            predicted_G = torch.zeros_like(out)
-            predicted_G[top_indices] = 1.0
-            
-            A = data.A.cpu().numpy()
-            B = data.B.cpu().numpy()
-            
-            predicted_gramian = compute_gramian(A, B, np.diag(predicted_G.cpu().numpy()))
-            predicted_trace = np.trace(predicted_gramian)
-            
-            optimal_G = data.y.cpu().numpy()
-            optimal_gramian = compute_gramian(A, B, np.diag(optimal_G))
-            optimal_trace = np.trace(optimal_gramian)
-
-            
-            relative_error = abs(optimal_trace - predicted_trace) / optimal_trace
-            total_relative_error += relative_error
-            total_samples += 1
-
-    average_relative_error = total_relative_error / total_samples
-    return average_relative_error
 
 def get_parameters(debug=False):
     if debug:
         return {
-            'n_states': 2,
+            'min_states': 2,
+            'max_states': 5,
             'n_inputs': 2,
             'num_samples': 10,
             'batch_size': 1,
@@ -200,8 +206,9 @@ def get_parameters(debug=False):
     else:
         # Parameters
         return {
-            'n_states': 10,
-            'n_inputs': 5,
+            'min_states': 5,
+            'max_states': 10,
+            'n_inputs': 9,
             'num_samples': 500,
             'batch_size': 1,
             'hidden_channels': 20,
@@ -212,40 +219,4 @@ def get_parameters(debug=False):
             'n_select_inputs': 3,
             }
 
-def main():
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
-    config = get_parameters(debug=is_debug)
-
-    # Generate data
-    data_list = generate_training_data(config["num_samples"], config["n_states"], config["n_inputs"], config["n_select_inputs"])
-
-    # Split data
-    train_data = data_list[:int(0.8 * len(data_list))]
-    test_data = data_list[int(0.8*len(data_list)):]
-
-    # Create data loaders
-    train_loader = DataLoader(train_data, batch_size=config["batch_size"], shuffle=True)
-    test_loader = DataLoader(test_data, batch_size=config["batch_size"])
-
-    # Initialize model
-    in_channels = data_list[0].x.size(1)
-    edge_dim = data_list[0].edge_attr.size(1)
-    model = EGAT(in_channels=in_channels, hidden_channels=config["hidden_channels"],
-                 edge_dim=edge_dim, num_layers=config["num_layers"], heads=config["heads"], num_inputs=config["n_inputs"]).to(device)
-
-    # Initialize optimizer
-    optimizer = optim.Adam(model.parameters(), lr=config["learning_rate"])
-    # optimizer = optim.SGD(model.parameters(), lr=config["learning_rate"])
-
-    # Training loop
-    for epoch in range(config["num_epochs"]):
-        loss = train(model, train_loader, optimizer, device)
-        train_acc = evaluate(model, train_loader, device, config["n_select_inputs"])
-        test_acc = evaluate(model, test_loader, device, config["n_select_inputs"])
-        print(f'Epoch: {epoch+1}, Loss: {loss:.4f}, Train Acc: {train_acc:.4f}, Test Acc: {test_acc:.4f}')
-
-    return model
-
-if __name__ == "__main__":
-    main()
