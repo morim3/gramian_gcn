@@ -122,12 +122,63 @@ def get_parameters(debug=False):
             'num_samples': 500,
             'batch_size': 1,
             'hidden_channels': 20,
-            'num_epochs': 100,
+            'num_epochs': 1,
             'learning_rate': 0.001,
             'num_layers': 5,
             'heads': 5,
             'n_select_inputs': 3,
             }
+
+def test_scalability(model, config, device, factors):
+    metrics = []
+    for factor in factors:
+        large_test_data = generate_training_data(
+            num_samples=100,  # サンプル数を減らして計算時間を節約
+            n_inputs=config.n_inputs,
+            n_select_inputs=config.n_select_inputs,
+            min_states=config.max_states * factor,
+            max_states=config.max_states * factor
+        )
+        large_test_loader = DataLoader(large_test_data, batch_size=config.batch_size)
+        acc, percentiles = evaluate(model, large_test_loader, device, config.n_select_inputs)
+        metrics.append({
+            'factor': factor,
+            'accuracy': acc,
+            'percentiles': percentiles
+        })
+    return metrics
+
+def log_scalability_results(metrics):
+    factors = [m['factor'] for m in metrics]
+    accuracies = [m['accuracy'] for m in metrics]
+    
+    # 精度のグラフ
+    plt.figure(figsize=(10, 6))
+    plt.plot(factors, accuracies, marker='o')
+    plt.title('Model Accuracy vs State Space Size')
+    plt.xlabel('Factor of max_states')
+    plt.ylabel('Accuracy')
+    plt.grid(True)
+    wandb.log({"scalability_accuracy": wandb.Image(plt)})
+    plt.close()
+
+    # パーセンタイルの箱ひげ図
+    plt.figure(figsize=(10, 6))
+    plt.boxplot([m['percentiles'] for m in metrics], labels=factors)
+    plt.title('Distribution of Percentiles vs State Space Size')
+    plt.xlabel('Factor of max_states')
+    plt.ylabel('Percentile')
+    plt.grid(True)
+    wandb.log({"scalability_percentiles": wandb.Image(plt)})
+    plt.close()
+
+    # 数値データもログに記録
+    for m in metrics:
+        wandb.log({
+            f"scalability_factor_{m['factor']}_accuracy": m['accuracy'],
+            f"scalability_factor_{m['factor']}_percentile_mean": np.mean(m['percentiles']),
+            f"scalability_factor_{m['factor']}_percentile_median": np.median(m['percentiles'])
+        })
 
 def main():
     wandb.init(project="graph_input_selection", config=get_parameters(debug=is_debug))
@@ -205,10 +256,11 @@ def main():
         print(f'Epoch: {epoch+1}, Loss: {loss:.4f}, Train Acc: {train_acc:.4f}, '
               f'Test Acc: {test_acc:.4f}, Large Test Acc: {large_test_acc:.4f}')
 
-    # Log graph structure statistics
-    log_graph_statistics(train_data)
+    scalability_factors = [2]
+    scalability_metrics = test_scalability(model, config, device, scalability_factors)
+    log_scalability_results(scalability_metrics)
 
-    # Log best and worst predictions
+    log_graph_statistics(train_data)
     best_pred, worst_pred = get_best_worst_predictions(model, test_loader, device, config.n_select_inputs)
     wandb.log({
         "best_prediction": wandb.Image(plot_prediction(best_pred, "Best Prediction")),
