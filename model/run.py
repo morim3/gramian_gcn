@@ -12,6 +12,37 @@ from model.gnn import EGAT, train, evaluate
 
 is_debug = False
 
+def get_parameters(debug=False):
+    if debug:
+        return {
+            'min_states': 2,
+            'max_states': 5,
+            'n_inputs': 2,
+            'num_samples': 10,
+            'batch_size': 1,
+            'hidden_channels': 16,
+            'num_epochs': 5,
+            'learning_rate': 0.01,
+            'num_layers': 2,
+            'heads': 2,
+            'n_select_inputs': 1,
+        }
+    else:
+        # Parameters
+        return {
+            'min_states': 5,
+            'max_states': 10,
+            'n_inputs': 9,
+            'num_samples': 500,
+            'batch_size': 1,
+            'hidden_channels': 20,
+            'num_epochs': 100,
+            'learning_rate': 0.001,
+            'num_layers': 5,
+            'heads': 5,
+            'n_select_inputs': 3,
+            }
+
 def get_best_worst_predictions(model, loader, device, n_select_inputs):
     model.eval()
     best_pred = worst_pred = None
@@ -96,39 +127,6 @@ def plot_prediction(pred_data, title):
     return fig
 
 
-def get_parameters(debug=False):
-    if debug:
-        return {
-            'min_states': 2,
-            'max_states': 5,
-            'n_inputs': 2,
-            'num_samples': 10,
-            'batch_size': 1,
-            'hidden_channels': 16,
-            'num_epochs': 5,
-            'learning_rate': 0.01,
-            'num_layers': 2,
-            'heads': 2,
-            'n_select_inputs': 1,
-        }
-
-
-    else:
-        # Parameters
-        return {
-            'min_states': 5,
-            'max_states': 10,
-            'n_inputs': 9,
-            'num_samples': 500,
-            'batch_size': 1,
-            'hidden_channels': 20,
-            'num_epochs': 1,
-            'learning_rate': 0.001,
-            'num_layers': 5,
-            'heads': 5,
-            'n_select_inputs': 3,
-            }
-
 def test_scalability(model, config, device, factors):
     metrics = []
     for factor in factors:
@@ -136,8 +134,8 @@ def test_scalability(model, config, device, factors):
             num_samples=100,  # サンプル数を減らして計算時間を節約
             n_inputs=config.n_inputs,
             n_select_inputs=config.n_select_inputs,
-            min_states=config.max_states * factor,
-            max_states=config.max_states * factor
+            min_states=int(config.max_states * factor),
+            max_states=int(config.max_states * factor)
         )
         large_test_loader = DataLoader(large_test_data, batch_size=config.batch_size)
         acc, percentiles = evaluate(model, large_test_loader, device, config.n_select_inputs)
@@ -256,7 +254,7 @@ def main():
         print(f'Epoch: {epoch+1}, Loss: {loss:.4f}, Train Acc: {train_acc:.4f}, '
               f'Test Acc: {test_acc:.4f}, Large Test Acc: {large_test_acc:.4f}')
 
-    scalability_factors = [2]
+    scalability_factors = [1.5, 2, 2.5, 3, 3.5]
     scalability_metrics = test_scalability(model, config, device, scalability_factors)
     log_scalability_results(scalability_metrics)
 
